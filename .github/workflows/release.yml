@@ -16,10 +16,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Refresh item catalog
+      - name: Refresh item catalog (best effort)
+        shell: pwsh
+        continue-on-error: true
+        run: python scripts/gen_catalog.py --fetch
+      - name: Version / build number
         shell: pwsh
         run: |
-          python scripts/gen_catalog.py
           $v = (Select-String '^version = "(.*)"' Cargo.toml | Select-Object -First 1).Matches[0].Groups[1].Value
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # Branch builds carry a build number so the in-app updater can order them;

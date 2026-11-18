@@ -7,6 +7,7 @@ edition = "2024"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 eframe = "0.37.0"
+flate2 = "1.1.11"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.18.0"
 self-replace = "1.5.1"

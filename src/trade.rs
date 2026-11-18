@@ -83,10 +83,25 @@ pub struct Sell {
     pub count: u32,
 }
 
+pub struct PartNeed {
+    pub part: usize,
+    pub have: [u32; 2],
+    /// Copies still missing per player (0 when the item is owned/mastered).
+    pub missing: [u32; 2],
+}
+
+/// A prime item at least one player still has to build.
+pub struct PrimeNeed {
+    pub prime: usize,
+    pub status: [Status; 2],
+    pub parts: Vec<PartNeed>,
+}
+
 #[derive(Default)]
 pub struct Plan {
     pub transfers: Vec<Transfer>,
     pub sells: Vec<Sell>,
+    pub needs: Vec<PrimeNeed>,
     /// Per prime: status for each player.
     pub status: Vec<[Status; 2]>,
 }
@@ -99,11 +114,16 @@ pub fn plan(cat: &Catalog, inv: [&Inventory; 2], prog: [&Progress; 2]) -> Plan {
             status(prog[1], &prime.unique, prime.mastery_xp),
         ];
         plan.status.push(st);
+        let mut need_parts = Vec::new();
         for (pt, part) in prime.parts.iter().enumerate() {
             let c = [
                 inv[0].get(&part.unique).map_or(0, |e| e.count) as u32,
                 inv[1].get(&part.unique).map_or(0, |e| e.count) as u32,
             ];
+            let missing = [0, 1].map(|i| if st[i] == Status::Missing { part.need.saturating_sub(c[i]) } else { 0 });
+            if missing != [0, 0] {
+                need_parts.push(PartNeed { part: pt, have: c, missing });
+            }
             if c == [0, 0] {
                 continue;
             }
@@ -122,6 +142,9 @@ pub fn plan(cat: &Catalog, inv: [&Inventory; 2], prog: [&Progress; 2]) -> Plan {
                 }
             }
         }
+        if !need_parts.is_empty() {
+            plan.needs.push(PrimeNeed { prime: pi, status: st, parts: need_parts });
+        }
     }
     plan
 }
@@ -137,7 +160,7 @@ mod tests {
 
     fn cat() -> Catalog {
         Catalog::from_json(&format!(
-            r#"{{"items":{{}},"primes":[{{"u":"{NAMI}","n":"Nami Skyla Prime","i":"x.png","x":450000,
+            r#"{{"names":{{}},"icons":{{}},"primes":[{{"u":"{NAMI}","n":"Nami Skyla Prime","x":450000,
                 "p":[["{HANDLE}","Nami Skyla Prime Handle",2]]}}]}}"#
         ))
         .unwrap()
@@ -158,6 +181,18 @@ mod tests {
         assert_eq!((t.from, t.count, t.kind), (0, 2, Kind::Free));
         // 1 left over after B's 2 needed copies -> free to sell
         assert_eq!((p.sells[0].who, p.sells[0].count), (0, 1));
+    }
+
+    #[test]
+    fn needs_only_for_players_who_lack_the_item() {
+        let (ia, pa) = player(1, 450000); // mastered: needs nothing
+        let (ib, pb) = player(1, 0); // has 1 of 2 handles
+        let p = plan(&cat(), [&ia, &ib], [&pa, &pb]);
+        assert_eq!(p.needs.len(), 1);
+        assert_eq!(p.needs[0].parts[0].missing, [0, 1]);
+        let (ic, pc) = player(0, 0);
+        let p = plan(&cat(), [&ib, &ic], [&pb, &pc]);
+        assert_eq!(p.needs[0].parts[0].missing, [1, 2]); // both need it
     }
 
     #[test]

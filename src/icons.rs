@@ -8,7 +8,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const CDN: &str = "https://cdn.warframestat.us/img/";
+const CDN: &str = "https://content.warframe.com/PublicExport/Manifest";
 const SIZE: u32 = 64;
 
 enum Slot {
@@ -34,13 +34,18 @@ pub fn cache_dir() -> PathBuf {
     base.join("InventoryCompare").join("icons")
 }
 
+/// Stable, short cache file name for a texture path (FNV-1a).
 fn safe(name: &str) -> String {
-    name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' }).collect()
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in name.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}.png")
 }
 
 fn encode(name: &str) -> String {
     name.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_') { (b as char).to_string() } else { format!("%{b:02X}") })
+        .map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'/' | b'!' | b'+' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()
 }
 

@@ -1689,6 +1689,7 @@ dependencies = [
  "aes",
  "cbc",
  "eframe",
+ "flate2",
  "image",
  "rfd",
  "self-replace",

@@ -15,6 +15,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use trade::{Kind, Plan, Progress, Status};
 
+#[derive(PartialEq, Clone, Copy)]
+enum NeedMode {
+    Both,
+    OnlyA,
+    OnlyB,
+    Any,
+}
+
 const BG: Color32 = Color32::from_rgb(32, 32, 32);
 const CARD: Color32 = Color32::from_rgb(43, 43, 43);
 const CARD_HI: Color32 = Color32::from_rgb(55, 55, 55);
@@ -128,6 +136,7 @@ enum Mode {
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Trade,
+    Needs,
     Compare,
 }
 
@@ -152,6 +161,8 @@ struct App {
     category: Option<String>,
     mode: Mode,
     search: String,
+    need_mode: NeedMode,
+    started_only: bool,
     update: Arc<Mutex<UpdateState>>,
 }
 
@@ -198,6 +209,8 @@ impl App {
             category: None,
             mode: Mode::OnlyB,
             search: String::new(),
+            need_mode: NeedMode::Both,
+            started_only: false,
             update: Arc::new(Mutex::new(UpdateState::Idle)),
         };
         app.check_updates(ctx);
@@ -383,7 +396,7 @@ impl App {
                         let prime = &cat.primes[t.prime];
                         let part = &prime.parts[t.part];
                         ui.horizontal(|ui| {
-                            icon(ui, icons, Some(&prime.image).filter(|i| !i.is_empty()).map(|s| s.as_str()), 40.0);
+                            icon(ui, icons, cat.icon(&part.unique), 40.0);
                             ui.vertical(|ui| {
                                 ui.label(RichText::new(&part.name).strong());
                                 let st = plan.status[t.prime];
@@ -420,7 +433,7 @@ impl App {
                 for s in sells {
                     let prime = &cat.primes[s.prime];
                     ui.horizontal(|ui| {
-                        icon(ui, icons, Some(&prime.image).filter(|i| !i.is_empty()).map(|s| s.as_str()), 40.0);
+                        icon(ui, icons, cat.icon(&prime.parts[s.part].unique), 40.0);
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&prime.parts[s.part].name).strong());
                             ui.label(RichText::new(format!("held by {}", names[s.who])).color(SUBTLE).size(12.0));
@@ -428,6 +441,123 @@ impl App {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(RichText::new(format!("×{}", s.count)).size(18.0).strong());
                         });
+                    });
+                }
+            });
+        });
+    }
+
+    fn needs_view(&mut self, ui: &mut egui::Ui) {
+        enum Line {
+            Header(usize),
+            Part(usize, usize),
+        }
+        let Some(plan) = &self.plan else { return };
+        let cat = &self.catalog;
+        let icons = &mut self.icons;
+        let names = [self.slots[0].label.clone(), self.slots[1].label.clone()];
+        let (mode, started_only) = (self.need_mode, self.started_only);
+        let q = self.search.to_lowercase();
+
+        let part_ok = |m: [u32; 2]| match mode {
+            NeedMode::Both => m[0] > 0 && m[1] > 0,
+            NeedMode::OnlyA => m[0] > 0 && m[1] == 0,
+            NeedMode::OnlyB => m[1] > 0 && m[0] == 0,
+            NeedMode::Any => m[0] > 0 || m[1] > 0,
+        };
+        let mut lines = Vec::new();
+        let (mut both, mut only) = (0, [0, 0]);
+        for (ni, n) in plan.needs.iter().enumerate() {
+            let prime = &cat.primes[n.prime];
+            let started = n.parts.iter().any(|p| p.have != [0, 0]);
+            for p in &n.parts {
+                if p.missing[0] > 0 && p.missing[1] > 0 {
+                    both += 1;
+                } else if p.missing[0] > 0 {
+                    only[0] += 1;
+                } else if p.missing[1] > 0 {
+                    only[1] += 1;
+                }
+            }
+            if started_only && !started {
+                continue;
+            }
+            let name_hit = q.is_empty() || prime.name.to_lowercase().contains(&q);
+            let vis: Vec<usize> = (0..n.parts.len())
+                .filter(|&i| part_ok(n.parts[i].missing))
+                .filter(|&i| name_hit || cat.primes[n.prime].parts[n.parts[i].part].name.to_lowercase().contains(&q))
+                .collect();
+            if !vis.is_empty() {
+                lines.push(Line::Header(ni));
+                lines.extend(vis.into_iter().map(|i| Line::Part(ni, i)));
+            }
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("🔍  Filter primes / parts…").desired_width(240.0));
+            ui.selectable_value(&mut self.need_mode, NeedMode::Both, format!("Both need ({both})"));
+            ui.selectable_value(&mut self.need_mode, NeedMode::OnlyA, format!("Only {} needs ({})", names[0], only[0]));
+            ui.selectable_value(&mut self.need_mode, NeedMode::OnlyB, format!("Only {} needs ({})", names[1], only[1]));
+            ui.selectable_value(&mut self.need_mode, NeedMode::Any, "Everything");
+            ui.checkbox(&mut self.started_only, "Only primes someone has started");
+        });
+        ui.label(
+            RichText::new("Parts still missing to build each prime. Mastered or already-built primes aren't counted.")
+                .color(SUBTLE)
+                .size(12.0),
+        );
+
+        card(ui, |ui| {
+            let w = ui.available_width();
+            let cnum = 150.0;
+            let cname = (w - 2.0 * cnum - 60.0).max(160.0);
+            ui.horizontal(|ui| {
+                ui.add_space(50.0);
+                ui.add_sized([cname, 20.0], egui::Label::new(RichText::new("Part").color(SUBTLE).strong()));
+                for n in &names {
+                    ui.add_sized([cnum, 20.0], egui::Label::new(RichText::new(n).color(SUBTLE).strong()).truncate());
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 40.0, lines.len(), |ui, range| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for line in &lines[range] {
+                    ui.horizontal(|ui| {
+                        ui.set_height(40.0);
+                        match *line {
+                            Line::Header(ni) => {
+                                let n = &plan.needs[ni];
+                                let prime = &cat.primes[n.prime];
+                                icon(ui, icons, cat.icon(&prime.unique), 34.0);
+                                ui.label(RichText::new(&prime.name).strong().size(16.0).color(ACCENT));
+                                for i in 0..2 {
+                                    let (t, c) = match n.status[i] {
+                                        Status::Mastered => ("mastered", GOOD),
+                                        Status::Owned => ("built", WARN),
+                                        Status::Missing => ("missing", BAD),
+                                    };
+                                    chip(ui, &format!("{}: {t}", names[i]), c);
+                                }
+                            }
+                            Line::Part(ni, pi) => {
+                                let n = &plan.needs[ni];
+                                let pn = &n.parts[pi];
+                                let part = &cat.primes[n.prime].parts[pn.part];
+                                ui.add_space(14.0);
+                                icon(ui, icons, cat.icon(&part.unique), 32.0);
+                                ui.add_sized([cname - 14.0, 24.0], egui::Label::new(&part.name).truncate());
+                                for i in 0..2 {
+                                    let (txt, col) = if pn.missing[i] > 0 {
+                                        (format!("needs {}  ({}/{})", pn.missing[i], pn.have[i], part.need), BAD)
+                                    } else if n.status[i] == Status::Missing {
+                                        (format!("✔ has {}/{}", pn.have[i], part.need), GOOD)
+                                    } else {
+                                        ("— not needed".to_string(), SUBTLE)
+                                    };
+                                    ui.add_sized([cnum, 24.0], egui::Label::new(RichText::new(txt).color(col)));
+                                }
+                            }
+                        }
                     });
                 }
             });
@@ -479,7 +609,7 @@ impl App {
                 for r in &visible[range] {
                     ui.horizontal(|ui| {
                         ui.set_height(36.0);
-                        icon(ui, icons, catalog.image(&r.path), 32.0);
+                        icon(ui, icons, catalog.icon(&r.path), 32.0);
                         ui.add_sized([cname, 24.0], egui::Label::new(&r.name).truncate()).on_hover_text(&r.path);
                         ui.add_sized([ccat, 24.0], egui::Label::new(RichText::new(&r.category).color(SUBTLE)).truncate());
                         let col = |n: u64, other: u64| if n == 0 { BAD } else if n > other { GOOD } else if n < other { WARN } else { TEXT };
@@ -525,10 +655,12 @@ impl eframe::App for App {
 
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Trade, "🔁  Prime trades");
+                ui.selectable_value(&mut self.tab, Tab::Needs, "📋  Who needs what");
                 ui.selectable_value(&mut self.tab, Tab::Compare, "⚖  Full compare");
             });
             match self.tab {
                 Tab::Trade => self.trade_view(ui),
+                Tab::Needs => self.needs_view(ui),
                 Tab::Compare => self.compare_view(ui),
             }
         });

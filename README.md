@@ -18,7 +18,8 @@ A tiny, fast, native Windows tool that opens two AlecaFrame `lastData.dat` files
 ## ✨ Features
 
 - 🔁 **Prime trade finder:** works out which prime parts each player can hand to the other, using mastery. Parts of a mastered item are *free* to give, and if both players have it mastered they're *free to sell*. If neither has mastered it, only spare copies are suggested and it's *your call*.
-- 🖼️ **In-game item icons**, downloaded on demand and cached locally.
+- 📋 **Who needs what:** for every prime in the game, shows the parts each player still needs, and filters to *both need*, *only X needs* or *only Y needs*.
+- 🖼️ **Real in-game item icons** (including part icons), downloaded on demand and cached locally.
 - ⬇️ **Self-updating:** checks GitHub releases on launch and updates in one click.
 - 🔓 **Decrypts `lastData.dat` locally.** Nothing is uploaded anywhere.
 - ⚖️ **Side-by-side diff** of every item category: Warframes, weapons, mods, resources, blueprints and more.
@@ -67,7 +68,16 @@ Recipe counts matter (e.g. Nami Skyla Prime needs 2 Blades and 2 Handles).
 
 ### Item data
 
-`assets/catalog.json` (names, icons, prime recipes) is generated from the community [warframe-items](https://github.com/WFCD/warframe-items) data by `scripts/gen_catalog.py`. The release workflow refreshes it on every build, so new primes arrive via updates. Icons come from `cdn.warframestat.us`. They're cached in `%LOCALAPPDATA%\InventoryCompare\icons` and the app works without them.
+`assets/catalog.json.gz` holds item names, icon paths and every prime recipe. It is generated from Warframe's official Public Export by `scripts/gen_catalog.py`:
+
+```bash
+python scripts/gen_catalog.py --dir path/to/exports   # ExportRecipes, ExportWeapons, ExportWarframes, ExportSentinels, ExportManifest… (+ optional warframe_lang_dict.json)
+python scripts/gen_catalog.py --fetch                 # or download the latest export
+```
+
+The release workflow tries `--fetch` before each build, so new primes arrive through updates. If that fails, the committed catalog is used. Icons come from `content.warframe.com`, are cached in `%LOCALAPPDATA%\InventoryCompare\icons`, and the app works without them.
+
+Sentinel weapons (Deconstructor Prime and friends) have no part recipes of their own. They come with their sentinel, so they are covered by the sentinel's parts.
 
 ### Key / IV overrides
 
@@ -84,7 +94,7 @@ $env:ALECAFRAME_IV  = "<32 hex chars>"
 ```bash
 cargo run --release     # run
 cargo test              # decrypt, diff and trade unit tests
-python scripts/gen_catalog.py   # refresh item catalog
+python scripts/gen_catalog.py --fetch   # refresh item catalog
 python scripts/make_icon.py     # regenerate the app icon
 ```
 
