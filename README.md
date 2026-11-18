@@ -17,13 +17,16 @@ A tiny, fast, native Windows tool that opens two AlecaFrame `lastData.dat` files
 
 ## ✨ Features
 
+- 🔁 **Prime trade finder:** works out which prime parts each player can hand to the other, using mastery. Parts of a mastered item are *free* to give, and if both players have it mastered they're *free to sell*. If neither has mastered it, only spare copies are suggested and it's *your call*.
+- 🖼️ **In-game item icons**, downloaded on demand and cached locally.
+- ⬇️ **Self-updating:** checks GitHub releases on launch and updates in one click.
 - 🔓 **Decrypts `lastData.dat` locally.** Nothing is uploaded anywhere.
 - ⚖️ **Side-by-side diff** of every item category: Warframes, weapons, mods, resources, blueprints and more.
 - 🎯 **One-click filters:** *Only X has*, *X has more*, *Same*, *Everything*.
 - 🔍 **Instant search.** Type "Forma" or "Rhino" and get your answer.
 - 🗂️ **Category filter** to narrow the list.
 - 🖱️ **Drag & drop** files straight onto the window.
-- ✏️ **Rename the players** (click the name) so the columns say *You* and *Charlie*.
+- ✏️ **Rename the players** (click the name) so the columns show real names instead of *Player 1* / *Player 2*.
 - 🪟 **Fluent / WinUI 3 look:** dark Mica-style palette, rounded cards, accent blue, Segoe UI.
 - 📦 **Single `.exe`,** no installer or runtime needed.
 
@@ -32,7 +35,7 @@ A tiny, fast, native Windows tool that opens two AlecaFrame `lastData.dat` files
 1. Grab `InventoryCompare.exe` from the [latest release](https://github.com/manor7777/InventoryCompare/releases/latest).
 2. Find your own file at `%LOCALAPPDATA%\AlecaFrame\lastData.dat` (press <kbd>Win</kbd>+<kbd>R</kbd> and paste that path).
 3. Ask your friend to send you theirs.
-4. Open the app, drop both files in, and pick **Only Charlie has**.
+4. Open the app and drop both files in. **Prime trades** shows what you can swap; **Full compare** shows everything.
 
 > 💡 Already-decrypted `inventory.json` files work too.
 
@@ -50,6 +53,22 @@ lastData.dat ──► AES-128-CBC (PKCS#7) decrypt ──► Warframe inventory
 
 Each top-level array in the inventory that holds `ItemType` entries becomes a category. Stackables use `ItemCount`; owned gear (frames, weapons) counts once per entry. Item names are derived from their `/Lotus/...` paths.
 
+### Prime trade rules
+
+For each prime item and each player the app checks `Mastered` (XP at the cap, 450k weapons / 900k frames and companions), `Owned` (built, not mastered) or `Missing`.
+
+| Giver | Receiver | Result |
+|---|---|---|
+| Mastered | Missing parts | **Free** to give, since the giver needs none |
+| Both mastered | | **Free to sell** |
+| Not mastered | Missing parts | Only spare copies beyond what the recipe needs. **Your call** |
+
+Recipe counts matter (e.g. Nami Skyla Prime needs 2 Blades and 2 Handles).
+
+### Item data
+
+`assets/catalog.json` (names, icons, prime recipes) is generated from the community [warframe-items](https://github.com/WFCD/warframe-items) data by `scripts/gen_catalog.py`. The release workflow refreshes it on every build, so new primes arrive via updates. Icons come from `cdn.warframestat.us`. They're cached in `%LOCALAPPDATA%\InventoryCompare\icons` and the app works without them.
+
 ### Key / IV overrides
 
 The static AES key and IV are baked in, as used by other community tools. If AlecaFrame ever changes them, override without rebuilding by setting 32-character hex strings:
@@ -64,7 +83,9 @@ $env:ALECAFRAME_IV  = "<32 hex chars>"
 
 ```bash
 cargo run --release     # run
-cargo test              # decrypt + diff unit tests
+cargo test              # decrypt, diff and trade unit tests
+python scripts/gen_catalog.py   # refresh item catalog
+python scripts/make_icon.py     # regenerate the app icon
 ```
 
 Requires a recent stable Rust toolchain. The UI is built with [`egui`](https://github.com/emilk/egui) and custom-styled to match Fluent Design.

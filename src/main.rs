@@ -1,11 +1,19 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod catalog;
 mod compare;
 mod decode;
+mod icons;
+mod trade;
+mod update;
 
+use catalog::Catalog;
 use compare::{diff, flatten, Inventory, Row};
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
+use icons::Icons;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use trade::{Kind, Plan, Progress, Status};
 
 const BG: Color32 = Color32::from_rgb(32, 32, 32);
 const CARD: Color32 = Color32::from_rgb(43, 43, 43);
@@ -77,17 +85,19 @@ struct Slot {
     label: String,
     path: Option<PathBuf>,
     inv: Option<Inventory>,
+    prog: Progress,
     error: Option<String>,
 }
 
 impl Slot {
     fn new(label: &str) -> Self {
-        Self { label: label.into(), path: None, inv: None, error: None }
+        Self { label: label.into(), path: None, inv: None, prog: Progress::default(), error: None }
     }
     fn load(&mut self, path: PathBuf) {
         match decode::load(&path) {
             Ok(v) => {
                 let inv = flatten(&v);
+                self.prog = trade::progress(&v);
                 if inv.is_empty() {
                     self.inv = None;
                     self.error = Some("Decrypted fine, but no items were found in it.".into());
@@ -115,25 +125,115 @@ enum Mode {
     Same,
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum Tab {
+    Trade,
+    Compare,
+}
+
+#[derive(Clone)]
+enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(update::Release),
+    Installing,
+    Error(String),
+}
+
 struct App {
     slots: [Slot; 2],
+    catalog: Catalog,
+    icons: Icons,
+    plan: Option<Plan>,
+    tab: Tab,
     rows: Vec<Row>,
     categories: Vec<String>,
     category: Option<String>,
     mode: Mode,
     search: String,
+    update: Arc<Mutex<UpdateState>>,
+}
+
+/// Draws an item icon (or an empty placeholder) and queues its download only
+/// when it is actually on screen.
+fn icon(ui: &mut egui::Ui, icons: &mut Icons, image: Option<&str>, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(6), Color32::from_rgb(36, 36, 36));
+    if let Some(img) = image.filter(|_| ui.is_rect_visible(rect)) {
+        let ctx = ui.ctx().clone();
+        if let Some(tex) = icons.get(&ctx, img) {
+            egui::Image::from_texture((tex.id(), rect.size())).paint_at(ui, rect.shrink(2.0));
+        }
+    }
+}
+
+fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.18))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| ui.label(RichText::new(text).color(color).size(12.0)));
+}
+
+fn status_text(s: Status) -> &'static str {
+    match s {
+        Status::Mastered => "mastered",
+        Status::Owned => "owns (not mastered)",
+        Status::Missing => "doesn't have it",
+    }
 }
 
 impl App {
-    fn new() -> Self {
-        Self {
-            slots: [Slot::new("You"), Slot::new("Charlie")],
+    fn new(ctx: &egui::Context) -> Self {
+        let app = Self {
+            slots: [Slot::new("Player 1"), Slot::new("Player 2")],
+            catalog: Catalog::load(),
+            icons: Icons::new(ctx),
+            plan: None,
+            tab: Tab::Trade,
             rows: vec![],
             categories: vec![],
             category: None,
             mode: Mode::OnlyB,
             search: String::new(),
+            update: Arc::new(Mutex::new(UpdateState::Idle)),
+        };
+        app.check_updates(ctx);
+        app
+    }
+
+    fn check_updates(&self, ctx: &egui::Context) {
+        {
+            let mut st = self.update.lock().unwrap();
+            if matches!(*st, UpdateState::Checking | UpdateState::Installing) {
+                return;
+            }
+            *st = UpdateState::Checking;
         }
+        let (st, ctx) = (self.update.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let res = match update::check() {
+                Ok(Some(r)) => UpdateState::Available(r),
+                Ok(None) => UpdateState::UpToDate,
+                Err(e) => UpdateState::Error(e),
+            };
+            *st.lock().unwrap() = res;
+            ctx.request_repaint();
+        });
+    }
+
+    fn install_update(&self, rel: update::Release, ctx: &egui::Context) {
+        *self.update.lock().unwrap() = UpdateState::Installing;
+        let (st, ctx) = (self.update.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            // On success this restarts the app and never returns.
+            if let Err(e) = update::install(&rel) {
+                *st.lock().unwrap() = UpdateState::Error(e);
+                ctx.request_repaint();
+            }
+        });
     }
 
     fn pick(&mut self, i: usize) {
@@ -149,8 +249,16 @@ impl App {
 
     fn rebuild(&mut self) {
         self.rows.clear();
+        self.plan = None;
         if let (Some(a), Some(b)) = (&self.slots[0].inv, &self.slots[1].inv) {
             self.rows = diff(a, b);
+            for r in &mut self.rows {
+                if let Some(n) = self.catalog.name(&r.path) {
+                    r.name = n.to_string();
+                }
+            }
+            self.rows.sort_by(|x, y| x.category.cmp(&y.category).then(x.name.cmp(&y.name)));
+            self.plan = Some(trade::plan(&self.catalog, [a, b], [&self.slots[0].prog, &self.slots[1].prog]));
         }
         let mut cats: Vec<String> = self.rows.iter().map(|r| r.category.clone()).collect();
         cats.sort();
@@ -205,6 +313,183 @@ impl App {
             self.pick(i);
         }
     }
+
+    fn header(&mut self, ui: &mut egui::Ui) {
+        let state = self.update.lock().unwrap().clone();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Inventory Compare").size(28.0).strong());
+            ui.label(RichText::new(format!("v{}", update::current_version())).color(SUBTLE));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &state {
+                UpdateState::Available(r) => {
+                    if ui.add(accent_button(&format!("⬇  Update to {}", r.tag))).clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.install_update(r.clone(), &ctx);
+                    }
+                    ui.hyperlink_to("What's new", &r.page);
+                }
+                UpdateState::Checking => {
+                    ui.label(RichText::new("Checking for updates…").color(SUBTLE));
+                }
+                UpdateState::Installing => {
+                    ui.label(RichText::new("Installing update… the app will restart").color(WARN));
+                }
+                UpdateState::Error(e) => {
+                    if ui.button("Retry").clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.check_updates(&ctx);
+                    }
+                    ui.label(RichText::new(format!("⚠ {e}")).color(BAD).size(12.0));
+                }
+                UpdateState::UpToDate | UpdateState::Idle => {
+                    if ui.button("Check for updates").clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.check_updates(&ctx);
+                    }
+                    if matches!(state, UpdateState::UpToDate) {
+                        ui.label(RichText::new("✔ Up to date").color(GOOD).size(12.0));
+                    }
+                }
+            });
+        });
+    }
+
+    fn trade_view(&mut self, ui: &mut egui::Ui) {
+        let Some(plan) = &self.plan else { return };
+        let cat = &self.catalog;
+        let icons = &mut self.icons;
+        let names = [self.slots[0].label.clone(), self.slots[1].label.clone()];
+        let q = self.search.to_lowercase();
+        let hit = |pi: usize, pt: usize| q.is_empty() || cat.primes[pi].parts[pt].name.to_lowercase().contains(&q);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("🔍  Filter parts…").desired_width(240.0));
+            chip(ui, "Free = giver has mastered it", GOOD);
+            chip(ui, "Your call = giver hasn't mastered it, spare copies only", WARN);
+        });
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for from in 0..2 {
+                let to = 1 - from;
+                let rows: Vec<_> = plan.transfers.iter().filter(|t| t.from == from && hit(t.prime, t.part)).collect();
+                card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(format!("{} → {}", names[from], names[to])).size(18.0).strong());
+                    ui.label(RichText::new(format!("Parts {} can give {} ({} lines)", names[from], names[to], rows.len())).color(SUBTLE).size(12.0));
+                    ui.add_space(4.0);
+                    if rows.is_empty() {
+                        ui.label(RichText::new("Nothing to hand over.").color(SUBTLE));
+                    }
+                    for t in rows {
+                        let prime = &cat.primes[t.prime];
+                        let part = &prime.parts[t.part];
+                        ui.horizontal(|ui| {
+                            icon(ui, icons, Some(&prime.image).filter(|i| !i.is_empty()).map(|s| s.as_str()), 40.0);
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&part.name).strong());
+                                let st = plan.status[t.prime];
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} {} · {} {}",
+                                        names[from], status_text(st[from]), names[to], status_text(st[to])
+                                    ))
+                                    .color(SUBTLE)
+                                    .size(12.0),
+                                );
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                match t.kind {
+                                    Kind::Free => chip(ui, "Free", GOOD),
+                                    Kind::YourCall => chip(ui, "Your call", WARN),
+                                }
+                                ui.label(RichText::new(format!("×{}", t.count)).size(18.0).strong());
+                            });
+                        });
+                    }
+                });
+            }
+
+            let sells: Vec<_> = plan.sells.iter().filter(|s| hit(s.prime, s.part)).collect();
+            card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Free to sell").size(18.0).strong());
+                ui.label(RichText::new("Mastered by the holder and not needed by the other player").color(SUBTLE).size(12.0));
+                ui.add_space(4.0);
+                if sells.is_empty() {
+                    ui.label(RichText::new("Nothing here yet.").color(SUBTLE));
+                }
+                for s in sells {
+                    let prime = &cat.primes[s.prime];
+                    ui.horizontal(|ui| {
+                        icon(ui, icons, Some(&prime.image).filter(|i| !i.is_empty()).map(|s| s.as_str()), 40.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&prime.parts[s.part].name).strong());
+                            ui.label(RichText::new(format!("held by {}", names[s.who])).color(SUBTLE).size(12.0));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(format!("×{}", s.count)).size(18.0).strong());
+                        });
+                    });
+                }
+            });
+        });
+    }
+
+    fn compare_view(&mut self, ui: &mut egui::Ui) {
+        let (na, nb) = (self.slots[0].label.clone(), self.slots[1].label.clone());
+        ui.horizontal_wrapped(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("🔍  Have you got…?").desired_width(240.0));
+            let modes = [
+                (Mode::OnlyB, format!("Only {nb} has")),
+                (Mode::OnlyA, format!("Only {na} has")),
+                (Mode::MoreB, format!("{nb} has more")),
+                (Mode::MoreA, format!("{na} has more")),
+                (Mode::Same, "Same".to_string()),
+                (Mode::All, "Everything".to_string()),
+            ];
+            for (m, label) in modes {
+                ui.selectable_value(&mut self.mode, m, label);
+            }
+            egui::ComboBox::from_id_salt("cat")
+                .selected_text(self.category.clone().unwrap_or_else(|| "All categories".into()))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.category, None, "All categories");
+                    for c in self.categories.clone() {
+                        ui.selectable_value(&mut self.category, Some(c.clone()), c);
+                    }
+                });
+        });
+
+        let visible: Vec<&Row> = self.rows.iter().filter(|r| self.matches(r)).collect();
+        ui.label(RichText::new(format!("{} items", visible.len())).color(SUBTLE));
+
+        let catalog = &self.catalog;
+        let icons = &mut self.icons;
+        card(ui, |ui| {
+            let w = ui.available_width();
+            let (cname, ccat, cnum) = (w * 0.42, w * 0.2, 80.0);
+            ui.horizontal(|ui| {
+                ui.add_space(40.0);
+                for (t, wd) in [("Item", cname), ("Category", ccat), (na.as_str(), cnum), (nb.as_str(), cnum)] {
+                    ui.add_sized([wd, 20.0], egui::Label::new(RichText::new(t).color(SUBTLE).strong()).truncate());
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 36.0, visible.len(), |ui, range| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for r in &visible[range] {
+                    ui.horizontal(|ui| {
+                        ui.set_height(36.0);
+                        icon(ui, icons, catalog.image(&r.path), 32.0);
+                        ui.add_sized([cname, 24.0], egui::Label::new(&r.name).truncate()).on_hover_text(&r.path);
+                        ui.add_sized([ccat, 24.0], egui::Label::new(RichText::new(&r.category).color(SUBTLE)).truncate());
+                        let col = |n: u64, other: u64| if n == 0 { BAD } else if n > other { GOOD } else if n < other { WARN } else { TEXT };
+                        ui.add_sized([cnum, 24.0], egui::Label::new(RichText::new(r.a.to_string()).color(col(r.a, r.b))));
+                        ui.add_sized([cnum, 24.0], egui::Label::new(RichText::new(r.b.to_string()).color(col(r.b, r.a))));
+                    });
+                }
+            });
+        });
+    }
 }
 
 impl eframe::App for App {
@@ -214,17 +499,14 @@ impl eframe::App for App {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         if !dropped.is_empty() {
             for p in dropped {
-                let idx = if self.slots[0].inv.is_none() { 0 } else if self.slots[1].inv.is_none() { 1 } else { 1 };
+                let idx = if self.slots[0].inv.is_none() { 0 } else { 1 };
                 self.slots[idx].load(p);
             }
             self.rebuild();
         }
 
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::same(24))).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Inventory Compare").size(28.0).strong());
-                ui.label(RichText::new("Warframe · AlecaFrame lastData.dat").color(SUBTLE));
-            });
+            self.header(ui);
 
             ui.columns(2, |cols| {
                 self.slot_card(&mut cols[0], 0);
@@ -241,71 +523,38 @@ impl eframe::App for App {
                 return;
             }
 
-            let (na, nb) = (self.slots[0].label.clone(), self.slots[1].label.clone());
-            ui.horizontal_wrapped(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("🔍  Have you got…?").desired_width(240.0));
-                let modes = [
-                    (Mode::OnlyB, format!("Only {nb} has")),
-                    (Mode::OnlyA, format!("Only {na} has")),
-                    (Mode::MoreB, format!("{nb} has more")),
-                    (Mode::MoreA, format!("{na} has more")),
-                    (Mode::Same, "Same".to_string()),
-                    (Mode::All, "Everything".to_string()),
-                ];
-                for (m, label) in modes {
-                    ui.selectable_value(&mut self.mode, m, label);
-                }
-                egui::ComboBox::from_id_salt("cat")
-                    .selected_text(self.category.clone().unwrap_or_else(|| "All categories".into()))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.category, None, "All categories");
-                        for c in self.categories.clone() {
-                            ui.selectable_value(&mut self.category, Some(c.clone()), c);
-                        }
-                    });
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Trade, "🔁  Prime trades");
+                ui.selectable_value(&mut self.tab, Tab::Compare, "⚖  Full compare");
             });
-
-            let visible: Vec<&Row> = self.rows.iter().filter(|r| self.matches(r)).collect();
-            ui.label(RichText::new(format!("{} items", visible.len())).color(SUBTLE));
-
-            card(ui, |ui| {
-                let w = ui.available_width();
-                let (cname, ccat, cnum) = (w * 0.45, w * 0.22, 80.0);
-                ui.horizontal(|ui| {
-                    for (t, wd) in [("Item", cname), ("Category", ccat), (na.as_str(), cnum), (nb.as_str(), cnum)] {
-                        ui.add_sized([wd, 20.0], egui::Label::new(RichText::new(t).color(SUBTLE).strong()).truncate());
-                    }
-                });
-                ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 28.0, visible.len(), |ui, range| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    for r in &visible[range] {
-                        ui.horizontal(|ui| {
-                            ui.set_height(28.0);
-                            ui.add_sized([cname, 24.0], egui::Label::new(&r.name).truncate()).on_hover_text(&r.path);
-                            ui.add_sized([ccat, 24.0], egui::Label::new(RichText::new(&r.category).color(SUBTLE)).truncate());
-                            let col = |n: u64, other: u64| if n == 0 { BAD } else if n > other { GOOD } else if n < other { WARN } else { TEXT };
-                            ui.add_sized([cnum, 24.0], egui::Label::new(RichText::new(r.a.to_string()).color(col(r.a, r.b))));
-                            ui.add_sized([cnum, 24.0], egui::Label::new(RichText::new(r.b.to_string()).color(col(r.b, r.a))));
-                        });
-                    }
-                });
-            });
+            match self.tab {
+                Tab::Trade => self.trade_view(ui),
+                Tab::Compare => self.compare_view(ui),
+            }
         });
     }
 }
 
+fn window_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(include_bytes!("../assets/icon.png")).ok()?.to_rgba8();
+    Some(egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() })
+}
+
 fn main() -> eframe::Result {
-    let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 720.0]).with_min_inner_size([760.0, 480.0]).with_title("Inventory Compare").with_drag_and_drop(true),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1000.0, 760.0])
+        .with_min_inner_size([760.0, 480.0])
+        .with_title("Inventory Compare")
+        .with_drag_and_drop(true);
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(Arc::new(icon));
+    }
     eframe::run_native(
         "Inventory Compare",
-        opts,
+        eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| {
             apply_fluent_theme(&cc.egui_ctx);
-            Ok(Box::new(App::new()))
+            Ok(Box::new(App::new(&cc.egui_ctx)))
         }),
     )
 }
