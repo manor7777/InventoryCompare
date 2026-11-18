@@ -11,6 +11,33 @@ pub struct Entry {
 
 pub type Inventory = BTreeMap<String, Entry>;
 
+/// Arrays that mention `ItemType` but are history/progress, not things you own.
+const IGNORED: &[&str] = &["XPInfo", "LoreFragmentScans", "PersonalTechProjects", "PendingRecipes", "Boosters"];
+
+pub fn category_name(key: &str) -> String {
+    match key {
+        "Suits" => "Warframes",
+        "LongGuns" => "Primary weapons",
+        "Pistols" => "Secondary weapons",
+        "Melee" => "Melee weapons",
+        "RawUpgrades" | "Upgrades" => "Mods",
+        "MiscItems" => "Resources & misc",
+        "Recipes" => "Blueprints",
+        "SpaceSuits" => "Archwings",
+        "SpaceGuns" | "SpaceMelee" => "Archwing weapons",
+        "Sentinels" => "Sentinels",
+        "SentinelWeapons" => "Sentinel weapons",
+        "KubrowPets" => "Companions",
+        "FlavourItems" => "Cosmetics",
+        "WeaponSkins" => "Skins",
+        "MechSuits" => "Necramechs",
+        "OperatorAmps" => "Amps",
+        "CrewShipSalvagedWeapons" | "CrewShipWeapons" => "Railjack weapons",
+        other => return pretty_name_raw(other),
+    }
+    .to_string()
+}
+
 /// Every top-level array of objects carrying an `ItemType` is a category
 /// (Suits, LongGuns, MiscItems, RawUpgrades, Recipes, ...). Stackables carry
 /// `ItemCount`; owned gear counts as one per entry.
@@ -18,7 +45,11 @@ pub fn flatten(root: &Value) -> Inventory {
     let mut inv = Inventory::new();
     let Some(obj) = root.as_object() else { return inv };
     for (cat, v) in obj {
+        if IGNORED.contains(&cat.as_str()) {
+            continue;
+        }
         let Some(arr) = v.as_array() else { continue };
+        let cat = category_name(cat);
         for item in arr {
             let Some(path) = item.get("ItemType").and_then(Value::as_str) else { continue };
             let n = item.get("ItemCount").and_then(Value::as_u64).unwrap_or(1);
@@ -34,7 +65,10 @@ pub fn flatten(root: &Value) -> Inventory {
 
 /// `/Lotus/Types/Items/MiscItems/OrokinCatalyst` -> `Orokin Catalyst`
 pub fn pretty_name(path: &str) -> String {
-    let last = path.rsplit('/').next().unwrap_or(path);
+    pretty_name_raw(path.rsplit('/').next().unwrap_or(path))
+}
+
+fn pretty_name_raw(last: &str) -> String {
     let mut out = String::new();
     let chars: Vec<char> = last.chars().collect();
     for (i, &c) in chars.iter().enumerate() {
