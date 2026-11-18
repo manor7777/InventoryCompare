@@ -71,7 +71,7 @@ Requires a recent stable Rust toolchain. The UI is built with [`egui`](https://g
 
 ## 📦 Releases
 
-Pushing a tag like `v0.1.0` triggers the **Release** workflow, which tests, builds on `windows-latest`, and publishes `InventoryCompare.exe` plus a zip to GitHub Releases. It can also be run manually from the **Actions** tab.
+Pushing a tag like `v0.1.0` (or pushing the dev branch, which publishes a numbered pre-release) triggers the **Release** workflow, which tests, builds on `windows-latest`, and publishes `InventoryCompare.exe` plus a zip to GitHub Releases. It can also be run manually from the **Actions** tab.
 
 ```bash
 git tag v0.1.1 && git push origin v0.1.1
