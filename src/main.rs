@@ -188,14 +188,6 @@ fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
         .show(ui, |ui| ui.label(RichText::new(text).color(color).size(12.0)));
 }
 
-fn status_text(s: Status) -> &'static str {
-    match s {
-        Status::Mastered => "mastered",
-        Status::Owned => "owns (not mastered)",
-        Status::Missing => "doesn't have it",
-    }
-}
-
 impl App {
     fn new(ctx: &egui::Context) -> Self {
         let app = Self {
@@ -366,84 +358,87 @@ impl App {
         });
     }
 
+    /// The simple answer: what each player should hand to the other.
     fn trade_view(&mut self, ui: &mut egui::Ui) {
         let Some(plan) = &self.plan else { return };
         let cat = &self.catalog;
         let icons = &mut self.icons;
         let names = [self.slots[0].label.clone(), self.slots[1].label.clone()];
+        let count = |from: usize| plan.transfers.iter().filter(|t| t.from == from).map(|t| t.count).sum::<u32>();
+        let (give_a, give_b) = (count(0), count(1));
+
+        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("🔍  Filter by item…").desired_width(240.0));
         let q = self.search.to_lowercase();
-        let hit = |pi: usize, pt: usize| q.is_empty() || cat.primes[pi].parts[pt].name.to_lowercase().contains(&q);
 
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("🔍  Filter parts…").desired_width(240.0));
-            chip(ui, "Free = giver has mastered it", GOOD);
-            chip(ui, "Your call = giver hasn't mastered it, spare copies only", WARN);
-        });
-
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for from in 0..2 {
+        ui.columns(2, |cols| {
+            for (from, ui) in cols.iter_mut().enumerate() {
                 let to = 1 - from;
-                let rows: Vec<_> = plan.transfers.iter().filter(|t| t.from == from && hit(t.prime, t.part)).collect();
+                let total = if from == 0 { give_a } else { give_b };
                 card(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(format!("{} → {}", names[from], names[to])).size(18.0).strong());
-                    ui.label(RichText::new(format!("Parts {} can give {} ({} lines)", names[from], names[to], rows.len())).color(SUBTLE).size(12.0));
-                    ui.add_space(4.0);
-                    if rows.is_empty() {
-                        ui.label(RichText::new("Nothing to hand over.").color(SUBTLE));
-                    }
-                    for t in rows {
-                        let prime = &cat.primes[t.prime];
-                        let part = &prime.parts[t.part];
-                        ui.horizontal(|ui| {
-                            icon(ui, icons, cat.icon(&part.unique), 40.0);
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(&part.name).strong());
-                                let st = plan.status[t.prime];
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} {} · {} {}",
-                                        names[from], status_text(st[from]), names[to], status_text(st[to])
-                                    ))
-                                    .color(SUBTLE)
-                                    .size(12.0),
-                                );
+                    ui.label(RichText::new(format!("{} gives {}", names[from], names[to])).size(20.0).strong());
+                    ui.label(
+                        RichText::new(format!("{total} part{} {} still needs", if total == 1 { "" } else { "s" }, names[to]))
+                            .color(SUBTLE),
+                    );
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().id_salt(("give", from)).auto_shrink([false, false]).show(ui, |ui| {
+                        let mut last = usize::MAX;
+                        let mut any = false;
+                        for t in plan.transfers.iter().filter(|t| t.from == from) {
+                            let prime = &cat.primes[t.prime];
+                            if !q.is_empty() && !prime.name.to_lowercase().contains(&q) {
+                                continue;
+                            }
+                            any = true;
+                            let part = &prime.parts[t.part];
+                            if last != t.prime {
+                                last = t.prime;
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    icon(ui, icons, cat.icon(&prime.unique), 34.0);
+                                    ui.label(RichText::new(&prime.name).strong().size(16.0).color(ACCENT));
+                                });
+                            }
+                            let short = part.name.strip_prefix(prime.name.as_str()).unwrap_or(&part.name).trim();
+                            ui.horizontal(|ui| {
+                                ui.add_space(14.0);
+                                icon(ui, icons, cat.icon(&part.unique), 28.0);
+                                ui.label(RichText::new(format!("{short}  ×{}", t.count)).size(15.0));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match t.kind {
+                                    Kind::Free => chip(ui, "safe – they've mastered it", GOOD),
+                                    Kind::YourCall => chip(ui, "spare copy", WARN),
+                                });
                             });
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                match t.kind {
-                                    Kind::Free => chip(ui, "Free", GOOD),
-                                    Kind::YourCall => chip(ui, "Your call", WARN),
-                                }
-                                ui.label(RichText::new(format!("×{}", t.count)).size(18.0).strong());
-                            });
-                        });
-                    }
+                        }
+                        if !any {
+                            ui.label(RichText::new("Nothing to hand over.").color(SUBTLE));
+                        }
+
+                        // Extra copies that nobody needs: just sell them.
+                        let sells: Vec<_> = plan
+                            .sells
+                            .iter()
+                            .filter(|s| s.who == from)
+                            .filter(|s| q.is_empty() || cat.primes[s.prime].name.to_lowercase().contains(&q))
+                            .collect();
+                        if !sells.is_empty() {
+                            ui.add_space(12.0);
+                            egui::CollapsingHeader::new(RichText::new(format!("Free to sell ({})", sells.len())).color(SUBTLE))
+                                .id_salt(("sell", from))
+                                .show(ui, |ui| {
+                                    for s in sells {
+                                        let part = &cat.primes[s.prime].parts[s.part];
+                                        ui.horizontal(|ui| {
+                                            icon(ui, icons, cat.icon(&part.unique), 24.0);
+                                            ui.label(format!("{}  ×{}", part.name, s.count));
+                                        });
+                                    }
+                                });
+                        }
+                    });
                 });
             }
-
-            let sells: Vec<_> = plan.sells.iter().filter(|s| hit(s.prime, s.part)).collect();
-            card(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new("Free to sell").size(18.0).strong());
-                ui.label(RichText::new("Mastered by the holder and not needed by the other player").color(SUBTLE).size(12.0));
-                ui.add_space(4.0);
-                if sells.is_empty() {
-                    ui.label(RichText::new("Nothing here yet.").color(SUBTLE));
-                }
-                for s in sells {
-                    let prime = &cat.primes[s.prime];
-                    ui.horizontal(|ui| {
-                        icon(ui, icons, cat.icon(&prime.parts[s.part].unique), 40.0);
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&prime.parts[s.part].name).strong());
-                            ui.label(RichText::new(format!("held by {}", names[s.who])).color(SUBTLE).size(12.0));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(format!("×{}", s.count)).size(18.0).strong());
-                        });
-                    });
-                }
-            });
         });
     }
 
@@ -654,7 +649,7 @@ impl eframe::App for App {
             }
 
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Trade, "🔁  Prime trades");
+                ui.selectable_value(&mut self.tab, Tab::Trade, "🔁  Trades");
                 ui.selectable_value(&mut self.tab, Tab::Needs, "📋  Who needs what");
                 ui.selectable_value(&mut self.tab, Tab::Compare, "⚖  Full compare");
             });

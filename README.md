@@ -17,7 +17,7 @@ A tiny, fast, native Windows tool that opens two AlecaFrame `lastData.dat` files
 
 ## ✨ Features
 
-- 🔁 **Prime trade finder:** works out which prime parts each player can hand to the other, using mastery. Parts of a mastered item are *free* to give, and if both players have it mastered they're *free to sell*. If neither has mastered it, only spare copies are suggested and it's *your call*.
+- 🔁 **Trades:** two simple lists, *what I give them* and *what they give me*, grouped by prime item. works out which prime parts each player can hand to the other, using mastery. Parts of a mastered item are *free* to give, and if both players have it mastered they're *free to sell*. If neither has mastered it, only spare copies are suggested and it's *your call*.
 - 📋 **Who needs what:** for every prime in the game, shows the parts each player still needs, and filters to *both need*, *only X needs* or *only Y needs*.
 - 🖼️ **Real in-game item icons** (including part icons), downloaded on demand and cached locally.
 - ⬇️ **Self-updating:** checks GitHub releases on launch and updates in one click.
@@ -36,7 +36,7 @@ A tiny, fast, native Windows tool that opens two AlecaFrame `lastData.dat` files
 1. Grab `InventoryCompare.exe` from the [latest release](https://github.com/manor7777/InventoryCompare/releases/latest).
 2. Find your own file at `%LOCALAPPDATA%\AlecaFrame\lastData.dat` (press <kbd>Win</kbd>+<kbd>R</kbd> and paste that path).
 3. Ask your friend to send you theirs.
-4. Open the app and drop both files in. **Prime trades** shows what you can swap; **Full compare** shows everything.
+4. Open the app and drop both files in. **Trades** shows what each of you should hand to the other; **Full compare** shows everything.
 
 > 💡 Already-decrypted `inventory.json` files work too.
 
